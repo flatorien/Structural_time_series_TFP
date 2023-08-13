@@ -15,7 +15,6 @@ from tensorflow_probability import sts
 
 tf.enable_v2_behavior()
 
-
 from pandas.plotting import register_matplotlib_converters
 register_matplotlib_converters()
 
@@ -130,28 +129,39 @@ def plot_one_step_predictive(dates, observed_time_series,
 # Time Series Data of San Francisco Crime report, from 2018 to 2023
 # Original source: https://data.sfgov.org/Public-Safety/Police-Department-Incident-Reports-2018-to-Present/wg3w-h783
 # San Francisco Police Department
-# And Covid Occurance data from 2021 to 2022
+# And Covid Occurance data from 2021 to 2023
 # dataset was incident-based data; here we will downsample it to time data
 
 crime_count = pd.read_csv("Sanfrancisco_crime_report_full.csv", delimiter=",")
 crime_count['Incident Time'] = crime_count['Incident Time'].str[:2]
 crime_count['count'] = 1
 crime_count = crime_count[['Incident Date', 'Incident Time', 'count']].groupby(['Incident Date', 'Incident Time']).sum().reset_index()
+
+crime_count_fill_empty = pd.DataFrame({'Incident Date' : np.arange('2021-01-01', '2023-08-08', dtype='datetime64[h]')})
+crime_count_fill_empty['Incident Time'] = crime_count_fill_empty['Incident Date'].astype(str).str[-8:-6]
+crime_count_fill_empty['Incident Date'] = crime_count_fill_empty['Incident Date'].astype(str).str[:10].str.replace('-', '/')
+crime_count = crime_count_fill_empty.merge(crime_count, how='left', on=['Incident Date', 'Incident Time'])
+crime_count = crime_count.fillna(0)
+
+
 crime_count = crime_count['count'].values.astype(np.float32)
 
-crime_count_dates = np.arange('2018-01-01', '2023-08-08', dtype='datetime64[h]')
-crime_count_loc = mdates.WeekdayLocator(byweekday=mdates.WE)
-crime_count_fmt = mdates.DateFormatter('%a %y %b %d')
+
+crime_count_dates = np.arange('2021-01-01', '2023-08-08', dtype='datetime64[h]')
+crime_count_loc = mdates.MonthLocator(interval=4)
+crime_count_fmt = mdates.DateFormatter('%Y/%m/%d')
 
 
 covid_count = pd.read_csv("Sanfrancisco_covid_count.csv", delimiter=",")
+covid_count['specimen_collection_date'] = covid_count['specimen_collection_date'].str[:10]
+covid_count['specimen_collection_date'] = pd.to_datetime(covid_count['specimen_collection_date'], format="%m/%d/%Y")
+covid_count = covid_count.groupby('specimen_collection_date').sum().reset_index()
 covid_count = covid_count['new_cases'].values.astype(np.float32)
 
 
-# covid data starts at 21/01/01 while police data starts at 18/01/01, so we fill the empty period
-covid_case_pre_fill = np.zeros((365*3,), dtype=np.float32)
+
+# covid data ends at 23/06/30 while police data ends at 23/08/08, so we fill the empty period
 covid_case = np.repeat(covid_count, 24)
-covid_case = np.append(covid_case_pre_fill, covid_case)
 len_diff = crime_count.__len__() - covid_case.__len__()
 covid_case_end_fill = np.zeros((len_diff,), dtype=np.float32)
 covid_case = np.append(covid_case, covid_case_end_fill)
@@ -163,12 +173,14 @@ crime_count_training_data = crime_count[:-num_forecast_steps]
 
 colors = sns.color_palette()
 c1, c2 = colors[0], colors[1]
-
+"""
 fig = plt.figure(figsize=(12, 6))
 ax = fig.add_subplot(2, 1, 1)
 ax.plot(crime_count_dates[:-num_forecast_steps],
         crime_count[:-num_forecast_steps], lw=2, label="training data")
-ax.set_ylabel("Hourly demand (GW)")
+#ax.plot(crime_count_dates[7992:10152],
+#        crime_count[7992:10152], lw=2, label="training data")
+ax.set_ylabel("Hourly crime_count")
 
 
 
@@ -176,45 +188,52 @@ ax = fig.add_subplot(2, 1, 2)
 
 ax.plot(crime_count_dates[:-num_forecast_steps],
         covid_case[:-num_forecast_steps], lw=2, label="training data", c=c2)
+#ax.plot(crime_count_dates[7992:10152],
+#        covid_case[7992:10152], lw=2, label="training data", c=c2)
 ax.set_ylabel("Covid Case")
 ax.set_title("Covid Case")
 ax.xaxis.set_major_locator(crime_count_loc)
 ax.xaxis.set_major_formatter(crime_count_fmt)
-fig.suptitle("Covid Patient Occurance in San Francisco, USA",
+fig.suptitle("Comparison of Covid Patient and Crime Report in San Francisco, USA",
              fontsize=15)
 fig.autofmt_xdate()
-
+"""
 
 
 def build_model(observed_time_series):
   hour_of_day_effect = sts.Seasonal(
       num_seasons=24,
       observed_time_series=observed_time_series,
+      allow_drift=True,
       name='hour_of_day_effect')
   day_of_week_effect = sts.Seasonal(
       num_seasons=7, num_steps_per_season=24,
       observed_time_series=observed_time_series,
+      allow_drift=True,
       name='day_of_week_effect')
-  temperature_effect = sts.LinearRegression(
-      design_matrix=tf.reshape(temperature - np.mean(temperature),
-                               (-1, 1)), name='temperature_effect')
+  covid_case_effect = sts.LinearRegression(
+      design_matrix=tf.reshape(covid_case - np.mean(covid_case),
+                               (-1, 1)), name='covid_case_effect')
   autoregressive = sts.Autoregressive(
       order=1,
       observed_time_series=observed_time_series,
+      coefficients_prior=None,
+      level_scale_prior=None,
+      initial_state_prior=None,
       name='autoregressive')
   model = sts.Sum([hour_of_day_effect,
                    day_of_week_effect,
-                   temperature_effect,
+                   #covid_case_effect,
                    autoregressive],
                    observed_time_series=observed_time_series)
   return model
 
 
-demand_model = build_model(demand_training_data)
+crime_count_model = build_model(crime_count_training_data)
 
 # Build the variational surrogate posteriors `qs`.
 variational_posteriors = tfp.sts.build_factored_surrogate_posterior(
-    model=demand_model)
+    model=crime_count_model)
 
 
 #@title Minimize the variational loss.
@@ -225,8 +244,8 @@ num_variational_steps = int(num_variational_steps)
 
 # Build and optimize the variational loss function.
 elbo_loss_curve = tfp.vi.fit_surrogate_posterior(
-    target_log_prob_fn=demand_model.joint_distribution(
-        observed_time_series=demand_training_data).log_prob,
+    target_log_prob_fn=crime_count_model.joint_distribution(
+        observed_time_series=crime_count_training_data).log_prob,
     surrogate_posterior=variational_posteriors,
     optimizer=tf.optimizers.Adam(learning_rate=0.1),
     num_steps=num_variational_steps,
@@ -235,62 +254,61 @@ plt.plot(elbo_loss_curve)
 plt.show()
 
 # Draw samples from the variational posterior.
-q_samples_demand_ = variational_posteriors.sample(50)
+q_samples_crime_count_ = variational_posteriors.sample(50)
 
 
 
 print("Inferred parameters:")
-for param in demand_model.parameters:
+for param in crime_count_model.parameters:
   print("{}: {} +- {}".format(param.name,
-                              np.mean(q_samples_demand_[param.name], axis=0),
-                              np.std(q_samples_demand_[param.name], axis=0)))
+                              np.mean(q_samples_crime_count_[param.name], axis=0),
+                              np.std(q_samples_crime_count_[param.name], axis=0)))
 
 
 
-demand_forecast_dist = tfp.sts.forecast(
-    model=demand_model,
-    observed_time_series=demand_training_data,
-    parameter_samples=q_samples_demand_,
+crime_count_forecast_dist = tfp.sts.forecast(
+    model=crime_count_model,
+    observed_time_series=crime_count_training_data,
+    parameter_samples=q_samples_crime_count_,
     num_steps_forecast=num_forecast_steps)
 
 
 num_samples=10
 
-(demand_forecast_mean, demand_forecast_scale, demand_forecast_samples) = (
-    demand_forecast_dist.mean().numpy()[..., 0], demand_forecast_dist.stddev().numpy()[..., 0],
-    demand_forecast_dist.sample(num_samples).numpy()[..., 0])
+(crime_count_forecast_mean, crime_count_forecast_scale, crime_count_forecast_samples) = (
+    crime_count_forecast_dist.mean().numpy()[..., 0], crime_count_forecast_dist.stddev().numpy()[..., 0],
+    crime_count_forecast_dist.sample(num_samples).numpy()[..., 0])
 
 
-fig, ax = plot_forecast(demand_dates, demand,
-                        demand_forecast_mean,
-                        demand_forecast_scale,
-                        demand_forecast_samples,
-                        title="Electricity demand forecast",
-                        x_locator=demand_loc, x_formatter=demand_fmt)
-ax.set_ylim([0, 10])
+fig, ax = plot_forecast(crime_count_dates, crime_count,
+                        crime_count_forecast_mean,
+                        crime_count_forecast_scale,
+                        crime_count_forecast_samples,
+                        title="Crime Count forecast",
+                        x_locator=crime_count_loc, x_formatter=crime_count_fmt)
 fig.tight_layout()
 
 
 # Get the distributions over component outputs from the posterior marginals on
 # training data, and from the forecast model.
 component_dists = sts.decompose_by_component(
-    demand_model,
-    observed_time_series=demand_training_data,
-    parameter_samples=q_samples_demand_)
+    crime_count_model,
+    observed_time_series=crime_count_training_data,
+    parameter_samples=q_samples_crime_count_)
 
 forecast_component_dists = sts.decompose_forecast_by_component(
-    demand_model,
-    forecast_dist=demand_forecast_dist,
-    parameter_samples=q_samples_demand_)
+    crime_count_model,
+    forecast_dist=crime_count_forecast_dist,
+    parameter_samples=q_samples_crime_count_)
 
 
-demand_component_means_, demand_component_stddevs_ = (
+crime_count_component_means_, crime_count_component_stddevs_ = (
     {k.name: c.mean() for k, c in component_dists.items()},
     {k.name: c.stddev() for k, c in component_dists.items()})
 
 (
-    demand_forecast_component_means_,
-    demand_forecast_component_stddevs_
+    crime_count_forecast_component_means_,
+    crime_count_forecast_component_stddevs_
 ) = (
     {k.name: c.mean() for k, c in forecast_component_dists.items()},
     {k.name: c.stddev() for k, c in forecast_component_dists.items()}
@@ -299,47 +317,47 @@ demand_component_means_, demand_component_stddevs_ = (
 # Concatenate the training data with forecasts for plotting.
 component_with_forecast_means_ = collections.OrderedDict()
 component_with_forecast_stddevs_ = collections.OrderedDict()
-for k in demand_component_means_.keys():
+for k in crime_count_component_means_.keys():
   component_with_forecast_means_[k] = np.concatenate([
-      demand_component_means_[k],
-      demand_forecast_component_means_[k]], axis=-1)
+      crime_count_component_means_[k],
+      crime_count_forecast_component_means_[k]], axis=-1)
   component_with_forecast_stddevs_[k] = np.concatenate([
-      demand_component_stddevs_[k],
-      demand_forecast_component_stddevs_[k]], axis=-1)
+      crime_count_component_stddevs_[k],
+      crime_count_forecast_component_stddevs_[k]], axis=-1)
 
 
 fig, axes = plot_components(
-  demand_dates,
+  crime_count_dates,
   component_with_forecast_means_,
   component_with_forecast_stddevs_,
-  x_locator=demand_loc, x_formatter=demand_fmt)
+  x_locator=crime_count_loc, x_formatter=crime_count_fmt)
 for ax in axes.values():
-  ax.axvline(demand_dates[-num_forecast_steps], linestyle="--", color='red')
+  ax.axvline(crime_count_dates[-num_forecast_steps], linestyle="--", color='red')
 
 
-demand_one_step_dist = sts.one_step_predictive(
-    demand_model,
-    observed_time_series=demand,
-    parameter_samples=q_samples_demand_)
+crime_count_one_step_dist = sts.one_step_predictive(
+    crime_count_model,
+    observed_time_series=crime_count,
+    parameter_samples=q_samples_crime_count_)
 
-demand_one_step_mean, demand_one_step_scale = (
-    demand_one_step_dist.mean().numpy(), demand_one_step_dist.stddev().numpy())
+crime_count_one_step_mean, crime_count_one_step_scale = (
+    crime_count_one_step_dist.mean().numpy(), crime_count_one_step_dist.stddev().numpy())
 
 
 
 fig, ax = plot_one_step_predictive(
-    demand_dates, demand,
-    demand_one_step_mean, demand_one_step_scale,
-    x_locator=demand_loc, x_formatter=demand_fmt)
-ax.set_ylim(0, 10)
+    crime_count_dates, crime_count,
+    crime_count_one_step_mean, crime_count_one_step_scale,
+    x_locator=crime_count_loc, x_formatter=crime_count_fmt)
+#ax.set_ylim(0, 10)
 
 # Use the one-step-ahead forecasts to detect anomalous timesteps.
-zscores = np.abs((demand - demand_one_step_mean) /
-                 demand_one_step_scale)
+zscores = np.abs((crime_count - crime_count_one_step_mean) /
+                 crime_count_one_step_scale)
 anomalies = zscores > 3.0
-ax.scatter(demand_dates[anomalies],
-           demand[anomalies],
+ax.scatter(crime_count_dates[anomalies],
+           crime_count[anomalies],
            c="red", marker="x", s=20, linewidth=2, label=r"Anomalies (>3$\sigma$)")
-ax.plot(demand_dates, zscores, color="black", alpha=0.1, label='predictive z-score')
+ax.plot(crime_count_dates, zscores, color="black", alpha=0.1, label='predictive z-score')
 ax.legend()
 plt.show()
