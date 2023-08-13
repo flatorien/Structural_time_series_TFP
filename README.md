@@ -7,6 +7,9 @@ Detailed description located here(Medium article, Korean): https://medium.com/@f
 Code Based From STS tutorial page: 
 https://github.com/tensorflow/probability/blob/main/tensorflow_probability/examples/jupyter_notebooks/Structural_Time_Series_Modeling_Case_Studies_Atmospheric_CO2_and_Electricity_Demand.ipynb
 
+
 File source from San Francisco data
 Crime Report: https://data.sfgov.org/Public-Safety/Police-Department-Incident-Reports-2018-to-Present/wg3w-h783
+
+
 Covid Count: https://data.sfgov.org/COVID-19/ARCHIVED-COVID-19-Cases-by-Vaccination-Status-Over/gqw3-444p
